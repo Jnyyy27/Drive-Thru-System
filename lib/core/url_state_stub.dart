@@ -1,1 +1,1 @@
-void clearBrowserFragment() {}
+void clearBrowserFragment([Uri? replacement]) {}

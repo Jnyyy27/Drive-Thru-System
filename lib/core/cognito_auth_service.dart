@@ -18,14 +18,16 @@ class CognitoAuthService {
   Uri buildLoginUri() {
     final base = Uri.parse('$_authBaseUrl/login');
     return base.replace(
-      queryParameters: <String, String>{'next': _currentReturnUri().toString()},
+      queryParameters: <String, String>{
+        'next': _dashboardReturnUri().toString(),
+      },
     );
   }
 
   Uri buildLogoutUri() {
     final base = Uri.parse('$_authBaseUrl/logout');
     return base.replace(
-      queryParameters: <String, String>{'next': _currentReturnUri().toString()},
+      queryParameters: <String, String>{'next': _dashboardReturnUri().toString()},
     );
   }
 
@@ -39,23 +41,45 @@ class CognitoAuthService {
   }
 
   Future<bool> consumeRedirectTokenIfPresent() async {
-    final fragment = Uri.base.fragment.trim();
-    if (fragment.isEmpty) {
-      return false;
-    }
-
-    final params = Uri.splitQueryString(fragment);
-    final idToken = (params['id_token'] ?? '').trim();
+    final idToken = _extractIdTokenFromUri(Uri.base);
     if (idToken.isEmpty) {
       return false;
     }
 
     await _tokenStore.saveIdToken(idToken);
-    clearBrowserFragment();
+    clearBrowserFragment(_dashboardReturnUri());
     return true;
   }
 
-  Uri _currentReturnUri() {
-    return Uri.base.replace(fragment: '');
+  String _extractIdTokenFromUri(Uri uri) {
+    final fragment = uri.fragment.trim();
+    if (fragment.isNotEmpty) {
+      final fragmentParams = Uri.splitQueryString(fragment);
+      final fragmentToken = (fragmentParams['id_token'] ?? '').trim();
+      if (fragmentToken.isNotEmpty) {
+        return fragmentToken;
+      }
+    }
+
+    final queryToken = (uri.queryParameters['id_token'] ?? '').trim();
+    if (queryToken.isNotEmpty) {
+      return queryToken;
+    }
+
+    final path = uri.path.trim();
+    const legacyPrefix = '/id_token=';
+    if (path.startsWith(legacyPrefix)) {
+      return path.substring(legacyPrefix.length).trim();
+    }
+
+    return '';
+  }
+
+  Uri _dashboardReturnUri() {
+    return Uri.base.replace(
+      path: '/dashboard',
+      queryParameters: <String, String>{},
+      fragment: '',
+    );
   }
 }

@@ -1,10 +1,16 @@
-import 'dart:html' as html;
+import 'package:web/web.dart' as web;
 
-void clearBrowserFragment() {
-  final cleanUri = Uri.base.replace(fragment: '');
-  html.window.history.replaceState(
+void clearBrowserFragment([Uri? replacement]) {
+  final cleanUri =
+      replacement ??
+      Uri.base.replace(
+        path: '/dashboard',
+        queryParameters: <String, String>{},
+        fragment: '',
+      );
+  web.window.history.replaceState(
     null,
-    html.document.title,
+    web.document.title,
     cleanUri.toString(),
   );
 }

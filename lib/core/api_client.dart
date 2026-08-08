@@ -9,17 +9,17 @@ import 'auth_token_store.dart';
 
 class ApiClient {
   ApiClient(this._tokenStore)
-      : _dio = Dio(
-          BaseOptions(
-            baseUrl: const String.fromEnvironment(
-              'API_BASE_URL',
-              defaultValue: 'https://vehicleentrysystem.duckdns.org/api',
-            ),
-            connectTimeout: const Duration(seconds: 20),
-            receiveTimeout: const Duration(seconds: 90),
-            headers: const {'Accept': 'application/json'},
+    : _dio = Dio(
+        BaseOptions(
+          baseUrl: const String.fromEnvironment(
+            'API_BASE_URL',
+            defaultValue: 'https://vehicleentrysystem.duckdns.org/api',
           ),
-        ) {
+          connectTimeout: const Duration(seconds: 20),
+          receiveTimeout: const Duration(seconds: 90),
+          headers: const {'Accept': 'application/json'},
+        ),
+      ) {
     _dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) async {
@@ -48,6 +48,26 @@ class ApiClient {
     return _asMap(response.data);
   }
 
+  Future<Map<String, dynamic>> dashboardSummary() async {
+    final response = await _dio.get('/dashboard');
+    return _asMap(response.data);
+  }
+
+  Future<Map<String, dynamic>> menu() async {
+    final response = await _dio.get('/menu');
+    return _asMap(response.data);
+  }
+
+  Future<Map<String, dynamic>> logs() async {
+    final response = await _dio.get('/logs');
+    return _asMap(response.data);
+  }
+
+  Future<Map<String, dynamic>> ordersDisplay() async {
+    final response = await _dio.get('/orders/display');
+    return _asMap(response.data);
+  }
+
   Future<Map<String, dynamic>> detectPlate(XFile image) async {
     final bytes = await image.readAsBytes();
     final formData = FormData.fromMap({
@@ -59,6 +79,16 @@ class ApiClient {
     });
 
     final response = await _dio.post('/detect-plate', data: formData);
+    return _asMap(response.data);
+  }
+
+  Future<Map<String, dynamic>> submitEntry({
+    required String plateNumber,
+  }) async {
+    final response = await _dio.post(
+      '/entry',
+      data: <String, dynamic>{'plate_number': plateNumber},
+    );
     return _asMap(response.data);
   }
 
@@ -76,7 +106,9 @@ class ApiClient {
         'direction': direction,
         'message': message,
         'history': history ?? const <Map<String, dynamic>>[],
-        if (menuItems != null) 'menu_items': menuItems,
+        ...?menuItems == null
+            ? null
+            : <String, dynamic>{'menu_items': menuItems},
       },
     );
     return _asMap(response.data);
@@ -100,7 +132,8 @@ class ApiClient {
 
   MediaType _mediaTypeFor(String name, Uint8List bytes) {
     final mimeType =
-        lookupMimeType(name, headerBytes: bytes.take(32).toList()) ?? 'image/jpeg';
+        lookupMimeType(name, headerBytes: bytes.take(32).toList()) ??
+        'image/jpeg';
     final parts = mimeType.split('/');
     return MediaType(parts.first, parts.length > 1 ? parts[1] : 'jpeg');
   }

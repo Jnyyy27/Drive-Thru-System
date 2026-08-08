@@ -2,71 +2,62 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../core/api_client.dart';
-import '../../core/auth_token_store.dart';
-import '../../core/cognito_auth_service.dart';
+import '../../core/auth_session_controller.dart';
+import '../../core/voice_assistant_controller.dart';
+import '../../ui/speed_ui.dart';
 
 class ScanChatPage extends StatefulWidget {
-  const ScanChatPage({super.key});
+  const ScanChatPage({super.key, required this.authSession});
+
+  final AuthSessionController authSession;
 
   @override
   State<ScanChatPage> createState() => _ScanChatPageState();
 }
 
 class _ScanChatPageState extends State<ScanChatPage> {
-  final AuthTokenStore _tokenStore = AuthTokenStore();
-  late final ApiClient _apiClient = ApiClient(_tokenStore);
-  late final CognitoAuthService _authService = CognitoAuthService(_tokenStore);
   final ImagePicker _imagePicker = ImagePicker();
 
   final TextEditingController _messageController = TextEditingController();
+  final VoiceAssistantController _voice = VoiceAssistantController();
 
   bool _busy = false;
   String _direction = 'IN';
   String? _statusText;
-  String? _tokenPreview;
   String? _plateNumber;
-  String? _reply;
   String? _selectedImageName;
   Uint8List? _selectedImageBytes;
-  Map<String, dynamic>? _currentUser;
-  Map<String, dynamic>? _lastOrder;
   final List<Map<String, dynamic>> _history = <Map<String, dynamic>>[];
+  int _voiceSessionId = 0;
+  bool _voiceAutoSubmitting = false;
 
   @override
   void initState() {
     super.initState();
-    _bootstrapAuth();
+    _voice.addListener(_onVoiceChanged);
+    _voice.initialize();
+  }
+
+  void _onVoiceChanged() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
   }
 
   @override
   void dispose() {
+    _voice.removeListener(_onVoiceChanged);
+    _voice.dispose();
     _messageController.dispose();
     super.dispose();
   }
 
-  Future<void> _bootstrapAuth() async {
-    final consumedRedirectToken = await _authService
-        .consumeRedirectTokenIfPresent();
-    final token = await _apiClient.currentToken() ?? '';
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _tokenPreview = _previewToken(token);
-      _statusText = consumedRedirectToken
-          ? 'Cognito login completed. Refreshing current user...'
-          : token.isEmpty
-          ? 'Sign in with Cognito to start using the API.'
-          : 'Saved login found. Refreshing current user...';
-    });
-
-    if (token.isNotEmpty || consumedRedirectToken) {
-      await _hydrateCurrentUser(silent: true);
-    }
-  }
+  ApiClient get _apiClient => widget.authSession.apiClient;
 
   Future<void> _runGuarded(Future<void> Function() action) async {
     FocusScope.of(context).unfocus();
@@ -94,94 +85,6 @@ class _ScanChatPageState extends State<ScanChatPage> {
     }
   }
 
-  Future<void> _hydrateCurrentUser({bool silent = false}) async {
-    try {
-      final result = await _apiClient.me();
-      final user = result['user'];
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _currentUser = user is Map<String, dynamic>
-            ? user
-            : user is Map
-            ? user.cast<String, dynamic>()
-            : result;
-        _statusText = silent
-            ? 'Signed in successfully.'
-            : 'Authenticated successfully.';
-      });
-    } on DioException catch (error) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _currentUser = null;
-        _statusText = silent
-            ? 'Stored login is unavailable: ${error.response?.statusCode ?? '-'}.'
-            : 'Request failed: ${error.response?.statusCode ?? '-'} ${_stringify(error.response?.data) ?? error.message ?? 'Unknown error'}';
-      });
-    }
-  }
-
-  Future<void> _login() async {
-    await _runGuarded(() async {
-      final launched = await _authService.launchLogin();
-      if (!launched) {
-        throw Exception('Could not open Cognito login page.');
-      }
-      setState(() {
-        _statusText = 'Redirecting to Cognito login...';
-      });
-    });
-  }
-
-  Future<void> _logout() async {
-    await _runGuarded(() async {
-      final launched = await _authService.launchLogout();
-      if (!launched) {
-        throw Exception('Could not open logout page.');
-      }
-      setState(() {
-        _currentUser = null;
-        _tokenPreview = null;
-        _plateNumber = null;
-        _reply = null;
-        _lastOrder = null;
-        _selectedImageBytes = null;
-        _selectedImageName = null;
-        _history.clear();
-        _statusText = 'Redirecting to logout...';
-      });
-    });
-  }
-
-  Future<void> _clearLocalToken() async {
-    await _runGuarded(() async {
-      await _apiClient.clearToken();
-      setState(() {
-        _currentUser = null;
-        _tokenPreview = null;
-        _statusText = 'Local token cleared.';
-      });
-    });
-  }
-
-  Future<void> _checkHealth() async {
-    await _runGuarded(() async {
-      final result = await _apiClient.health();
-      setState(() {
-        _statusText = 'Health OK: ${_stringify(result)}';
-      });
-    });
-  }
-
-  Future<void> _checkMe() async {
-    await _runGuarded(() async {
-      await _hydrateCurrentUser();
-    });
-  }
-
   Future<void> _pickAndDetect(ImageSource source) async {
     await _runGuarded(() async {
       final image = await _imagePicker.pickImage(
@@ -205,14 +108,13 @@ class _ScanChatPageState extends State<ScanChatPage> {
         _statusText = _plateNumber == null
             ? 'Scan completed but no plate returned.'
             : 'Plate detected: $_plateNumber';
-        _reply = null;
-        _lastOrder = null;
         _history.clear();
       });
     });
   }
 
   Future<void> _sendChat() async {
+    _voiceSessionId = 0;
     final message = _messageController.text.trim();
     if (_plateNumber == null || _plateNumber!.isEmpty) {
       setState(() {
@@ -236,16 +138,116 @@ class _ScanChatPageState extends State<ScanChatPage> {
       );
 
       final reply = (result['reply'] ?? '').toString();
-      final order = (result['order'] as Map?)?.cast<String, dynamic>();
 
       setState(() {
         _history.add({'role': 'user', 'content': message});
         _history.add({'role': 'assistant', 'content': reply});
-        _reply = reply;
-        _lastOrder = order;
         _messageController.clear();
         _statusText = 'Assistant response received.';
       });
+
+      await _voice.speak(reply);
+    });
+  }
+
+  Future<void> _toggleVoiceInput() async {
+    if (_busy) {
+      return;
+    }
+    if (_voice.isListening) {
+      _voiceSessionId = 0;
+      await _voice.stopListening();
+      return;
+    }
+
+    final currentSessionId = ++_voiceSessionId;
+
+    await _voice.startListening(
+      onResult: (recognized) {
+        if (!mounted ||
+            currentSessionId != _voiceSessionId ||
+            _voiceAutoSubmitting) {
+          return;
+        }
+        setState(() {
+          _messageController
+            ..text = recognized
+            ..selection = TextSelection.collapsed(offset: recognized.length);
+        });
+      },
+      onFinalResult: (recognized) async {
+        if (!mounted ||
+            currentSessionId != _voiceSessionId ||
+            _voiceAutoSubmitting) {
+          return;
+        }
+
+        final cleaned = recognized.trim();
+        if (cleaned.isEmpty) {
+          return;
+        }
+
+        _voiceAutoSubmitting = true;
+        _voiceSessionId = 0;
+        try {
+          if (mounted) {
+            setState(() {
+              _messageController
+                ..text = cleaned
+                ..selection = TextSelection.collapsed(offset: cleaned.length);
+            });
+          }
+          await _voice.stopListening();
+          await _sendChat();
+        } finally {
+          _voiceAutoSubmitting = false;
+        }
+      },
+    );
+  }
+
+  Future<void> _submitEntry() async {
+    if (_plateNumber == null || _plateNumber!.isEmpty) {
+      setState(() {
+        _statusText = 'Detect a plate before submitting entry.';
+      });
+      return;
+    }
+
+    await _runGuarded(() async {
+      final result = await _apiClient.submitEntry(plateNumber: _plateNumber!);
+      final direction = (result['direction'] ?? '').toString().toUpperCase();
+      final transactionMessage =
+          (result['transaction_message'] ?? 'Entry submitted.').toString();
+      final welcomeMessage = (result['welcome_message'] ?? '').toString();
+
+      setState(() {
+        if (direction == 'IN' || direction == 'OUT') {
+          _direction = direction;
+        }
+        _statusText = transactionMessage;
+        _history.clear();
+        if (welcomeMessage.isNotEmpty) {
+          _history.add({'role': 'assistant', 'content': welcomeMessage});
+        }
+      });
+
+      // Only speak the welcome on this page for OUT direction.
+      // For IN, the menu page will speak it after navigation.
+      if (welcomeMessage.isNotEmpty && direction != 'IN') {
+        await _voice.speak(welcomeMessage);
+      }
+
+      if (mounted && direction == 'IN') {
+        context.go(
+          '/menu',
+          extra: <String, dynamic>{
+            'plate_number': _plateNumber,
+            'direction': direction,
+            'welcome_message': welcomeMessage,
+          },
+        );
+      }
     });
   }
 
@@ -253,123 +255,60 @@ class _ScanChatPageState extends State<ScanChatPage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Drive Thru Console'),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 16),
-            child: Center(
-              child: Text(
-                _busy ? 'Working...' : 'Ready',
-                style: theme.textTheme.labelLarge,
-              ),
-            ),
+    return SpeedShell(
+      title: 'Scan and Assistant',
+      subtitle: 'Speed Burger · Drive-Thru System',
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SpeedPill(text: _busy ? 'Working...' : 'Ready'),
+          const SizedBox(width: 8),
+          OutlinedButton(
+            onPressed: _busy ? null : () => context.go('/dashboard'),
+            child: const Text('Dashboard'),
           ),
         ],
       ),
-      body: LayoutBuilder(
+      child: LayoutBuilder(
         builder: (context, constraints) {
-          final wide = constraints.maxWidth >= 1100;
+          final wide = constraints.maxWidth >= 1000;
           final panels = <Widget>[
-            _buildAccessPanel(theme),
             _buildScanPanel(theme),
             _buildChatPanel(theme),
-            _buildResponsePanel(theme),
           ];
 
-          return Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                colors: [Color(0xFFF6F6F2), Color(0xFFE8F3F0)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-            ),
-            child: SafeArea(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(20),
-                child: wide
-                    ? Wrap(
-                        spacing: 20,
-                        runSpacing: 20,
-                        children: panels
-                            .map(
-                              (panel) => SizedBox(
-                                width: (constraints.maxWidth - 60) / 2,
-                                child: panel,
-                              ),
-                            )
-                            .toList(),
-                      )
-                    : Column(
-                        children: [
-                          for (final panel in panels) ...[
-                            panel,
-                            const SizedBox(height: 20),
-                          ],
-                        ],
-                      ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildAccessPanel(ThemeData theme) {
-    return _panel(
-      theme,
-      title: 'Authentication',
-      subtitle:
-          'Sign in through Cognito Hosted UI and return here with a token automatically.',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _infoRow('API Base URL', _apiClient.baseUrl),
-          const SizedBox(height: 12),
-          _infoRow('Auth Base URL', _authService.authBaseUrl),
-          const SizedBox(height: 16),
-          Text(
-            _tokenPreview == null
-                ? 'No local token stored yet.'
-                : 'Stored ID token: $_tokenPreview',
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              FilledButton(
-                onPressed: _busy ? null : _login,
-                child: const Text('Sign In with Cognito'),
+              const Text(
+                'Scan or upload a plate image, set direction, and continue with assistant ordering.',
+                style: TextStyle(color: SpeedColors.inkSoft),
               ),
-              OutlinedButton(
-                onPressed: _busy ? null : _logout,
-                child: const Text('Sign Out'),
-              ),
-              OutlinedButton(
-                onPressed: _busy ? null : _clearLocalToken,
-                child: const Text('Clear Local Token'),
-              ),
-              OutlinedButton(
-                onPressed: _busy ? null : _checkHealth,
-                child: const Text('Test Health'),
-              ),
-              OutlinedButton(
-                onPressed: _busy ? null : _checkMe,
-                child: const Text('Test /me'),
+              const SizedBox(height: 16),
+              Expanded(
+                child: SingleChildScrollView(
+                  child: wide
+                      ? Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(child: panels[0]),
+                            const SizedBox(width: 20),
+                            Expanded(child: panels[1]),
+                          ],
+                        )
+                      : Column(
+                          children: [
+                            for (final panel in panels) ...[
+                              panel,
+                              const SizedBox(height: 20),
+                            ],
+                          ],
+                        ),
+                ),
               ),
             ],
-          ),
-          if (_currentUser != null) ...[
-            const SizedBox(height: 16),
-            Text('Current User', style: theme.textTheme.titleSmall),
-            const SizedBox(height: 8),
-            _jsonBox(_currentUser!),
-          ],
-        ],
+          );
+        },
       ),
     );
   }
@@ -377,9 +316,9 @@ class _ScanChatPageState extends State<ScanChatPage> {
   Widget _buildScanPanel(ThemeData theme) {
     return _panel(
       theme,
-      title: 'Plate Detection',
+      title: 'Vehicle Entry',
       subtitle:
-          'Pick from gallery or use the camera, then upload to /api/detect-plate.',
+          'Pick from gallery or use the camera, then upload to detect plate.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -404,14 +343,29 @@ class _ScanChatPageState extends State<ScanChatPage> {
             ],
           ),
           const SizedBox(height: 16),
+          if (_statusText != null)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFAFBFC),
+                border: Border.all(color: SpeedColors.line),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                _statusText!,
+                style: const TextStyle(color: SpeedColors.inkSoft),
+              ),
+            ),
+          const Text(
+            'After plate detection, submit entry to record IN/OUT and initialize chatbot response.',
+            style: TextStyle(color: SpeedColors.inkSoft, fontSize: 12),
+          ),
+          const SizedBox(height: 10),
           Row(
             children: [
-              Expanded(
-                child: _infoRow(
-                  'Detected Plate',
-                  _plateNumber ?? 'Not scanned yet',
-                ),
-              ),
+              Expanded(child: _platePreview(_plateNumber ?? '-- -- --')),
               const SizedBox(width: 16),
               Expanded(
                 child: DropdownButtonFormField<String>(
@@ -438,6 +392,17 @@ class _ScanChatPageState extends State<ScanChatPage> {
               ),
             ],
           ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _busy || _plateNumber == null || _plateNumber!.isEmpty
+                  ? null
+                  : _submitEntry,
+              icon: const Icon(Icons.check_circle_outline),
+              label: const Text('Submit Entry'),
+            ),
+          ),
           if (_selectedImageBytes != null) ...[
             const SizedBox(height: 16),
             ClipRRect(
@@ -460,80 +425,148 @@ class _ScanChatPageState extends State<ScanChatPage> {
   }
 
   Widget _buildChatPanel(ThemeData theme) {
-    return _panel(
-      theme,
-      title: 'Assistant Chat',
-      subtitle: 'Send a driver message with plate and direction context.',
+    return Container(
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF10223D), Color(0xFF17355E), Color(0xFF1E4A78)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0x33FFFFFF)),
+      ),
+      padding: const EdgeInsets.all(18),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          TextField(
-            controller: _messageController,
-            minLines: 3,
-            maxLines: 5,
-            decoration: const InputDecoration(
-              labelText: 'Driver Message',
-              hintText: 'Example: I want 2 fish burgers and 1 cola',
-              alignLabelWithHint: true,
-              border: OutlineInputBorder(),
+          Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: const Color(0x24FFFFFF),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(
+                  Icons.support_agent,
+                  color: Color(0xFFFFD67A),
+                ),
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Drive-Thru Assistant',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.8,
+                        color: Color(0xB3F6F9FC),
+                      ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      'Speed Burger Assistant',
+                      style: TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFFF6F9FC),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'Send a driver request after plate detection.',
+            style: TextStyle(color: Color(0xCCF6F9FC), fontSize: 12),
+          ),
+          if ((_voice.statusText ?? '').trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              _voice.statusText!,
+              style: const TextStyle(color: Color(0xCCF6F9FC), fontSize: 12),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Container(
+            constraints: const BoxConstraints(minHeight: 90, maxHeight: 260),
+            child: SingleChildScrollView(
+              child: _history.isEmpty
+                  ? const _AssistantBubble(
+                      text:
+                          'Welcome to Speed Burger! Start by scanning a plate and sending an order message.',
+                      isUser: false,
+                    )
+                  : Column(
+                      children: _history
+                          .map(
+                            (entry) => _AssistantBubble(
+                              text: '${entry['content']}',
+                              isUser: entry['role'] == 'user',
+                            ),
+                          )
+                          .toList(),
+                    ),
             ),
           ),
           const SizedBox(height: 12),
-          FilledButton(
-            onPressed: _busy ? null : _sendChat,
-            child: const Text('Send to Assistant'),
-          ),
-          const SizedBox(height: 16),
-          Text('Conversation', style: theme.textTheme.titleSmall),
-          const SizedBox(height: 8),
-          if (_history.isEmpty)
-            Text('No messages yet.', style: theme.textTheme.bodyMedium)
-          else
-            Column(
-              children: _history
-                  .map(
-                    (entry) => Container(
-                      width: double.infinity,
-                      margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: entry['role'] == 'assistant'
-                            ? const Color(0xFFE7F6F2)
-                            : const Color(0xFFFFF6E5),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text('${entry['role']}: ${entry['content']}'),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _messageController,
+                  minLines: 1,
+                  maxLines: 3,
+                  style: const TextStyle(color: Color(0xFFF6F9FC)),
+                  decoration: InputDecoration(
+                    hintText: 'Ask, e.g. I want 2 fish burgers and 1 cola',
+                    hintStyle: const TextStyle(color: Color(0x99F6F9FC)),
+                    filled: true,
+                    fillColor: const Color(0x55050C14),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: Color(0x40FFFFFF)),
                     ),
-                  )
-                  .toList(),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildResponsePanel(ThemeData theme) {
-    return _panel(
-      theme,
-      title: 'Latest Response',
-      subtitle: 'Inspect backend output while you wire the rest of the app.',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _infoRow('Status', _statusText ?? 'Idle'),
-          const SizedBox(height: 16),
-          if (_reply != null) ...[
-            Text('Assistant Reply', style: theme.textTheme.titleSmall),
-            const SizedBox(height: 8),
-            _jsonBox({'reply': _reply}),
-            const SizedBox(height: 16),
-          ],
-          if (_lastOrder != null) ...[
-            Text('Order Payload', style: theme.textTheme.titleSmall),
-            const SizedBox(height: 8),
-            _jsonBox(_lastOrder!),
-          ] else
-            Text('No order payload yet.', style: theme.textTheme.bodyMedium),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: Color(0x40FFFFFF)),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _busy ? null : _sendChat,
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFFFD67A),
+                  foregroundColor: const Color(0xFF16253E),
+                ),
+                child: const Text('Send'),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filledTonal(
+                onPressed: _busy ? null : _toggleVoiceInput,
+                style: IconButton.styleFrom(
+                  backgroundColor: _voice.isListening
+                      ? const Color(0xFFFFD67A)
+                      : const Color(0x29FFFFFF),
+                  foregroundColor: _voice.isListening
+                      ? const Color(0xFF16253E)
+                      : Colors.white,
+                ),
+                icon: Icon(_voice.isListening ? Icons.mic : Icons.mic_none),
+                tooltip: _voice.isListening
+                    ? 'Stop voice input'
+                    : 'Start voice input',
+              ),
+            ],
+          ),
         ],
       ),
     );
@@ -545,51 +578,56 @@ class _ScanChatPageState extends State<ScanChatPage> {
     required String subtitle,
     required Widget child,
   }) {
-    return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: theme.textTheme.headlineSmall),
-            const SizedBox(height: 6),
-            Text(subtitle, style: theme.textTheme.bodyMedium),
-            const SizedBox(height: 20),
-            child,
-          ],
-        ),
+    return SpeedCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: theme.textTheme.titleMedium),
+          const SizedBox(height: 6),
+          Text(subtitle, style: const TextStyle(color: SpeedColors.inkSoft)),
+          const SizedBox(height: 20),
+          child,
+        ],
       ),
     );
   }
 
-  Widget _infoRow(String label, String value) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: Theme.of(context).textTheme.labelLarge),
-        const SizedBox(height: 6),
-        SelectableText(value),
-      ],
-    );
-  }
+  Widget _platePreview(String plate) {
+    final isEmpty = plate == '-- -- --';
 
-  Widget _jsonBox(Map<String, dynamic> data) {
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: const Color(0xFF0F172A),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: SelectableText(
-        _stringify(data) ?? '{}',
-        style: const TextStyle(
-          color: Color(0xFFE2E8F0),
-          fontFamily: 'Courier',
-          fontSize: 13,
-          height: 1.4,
+        color: isEmpty ? const Color(0xFFFAFBFC) : const Color(0xFFFFF8EA),
+        border: Border.all(
+          color: isEmpty ? SpeedColors.line : SpeedColors.amber,
+          width: 1.5,
         ),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: isEmpty ? SpeedColors.inkFaint : SpeedColors.amber,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              plate,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: isEmpty ? SpeedColors.inkFaint : SpeedColors.ink,
+                fontWeight: isEmpty ? FontWeight.w500 : FontWeight.w700,
+                letterSpacing: 0.6,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -600,14 +638,35 @@ class _ScanChatPageState extends State<ScanChatPage> {
     }
     return value.toString();
   }
+}
 
-  String? _previewToken(String? token) {
-    if (token == null || token.isEmpty) {
-      return null;
-    }
-    if (token.length <= 24) {
-      return token;
-    }
-    return '${token.substring(0, 12)}...${token.substring(token.length - 12)}';
+class _AssistantBubble extends StatelessWidget {
+  const _AssistantBubble({required this.text, required this.isUser});
+
+  final String text;
+  final bool isUser;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+        constraints: const BoxConstraints(maxWidth: 380),
+        decoration: BoxDecoration(
+          color: isUser ? const Color(0xFFFFD67A) : const Color(0x29FFFFFF),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          text,
+          style: TextStyle(
+            color: isUser ? const Color(0xFF16253E) : Colors.white,
+            fontWeight: isUser ? FontWeight.w600 : FontWeight.w500,
+            height: 1.35,
+          ),
+        ),
+      ),
+    );
   }
 }
