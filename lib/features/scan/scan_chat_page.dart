@@ -470,8 +470,7 @@ class _ScanChatPageState extends State<ScanChatPage> {
             imageBytes: _selectedImageBytes,
             imageName: _selectedImageName,
             busy: _busy,
-            onCamera: () => _pickAndDetect(ImageSource.camera),
-            onGallery: () => _pickAndDetect(ImageSource.gallery),
+            onPick: () => _pickAndDetect(ImageSource.gallery),
           ),
           const SizedBox(height: 18),
           if (_statusText != null) ...[
@@ -751,15 +750,13 @@ class _CaptureArea extends StatelessWidget {
     required this.imageBytes,
     required this.imageName,
     required this.busy,
-    required this.onCamera,
-    required this.onGallery,
+    required this.onPick,
   });
 
   final Uint8List? imageBytes;
   final String? imageName;
   final bool busy;
-  final VoidCallback onCamera;
-  final VoidCallback onGallery;
+  final VoidCallback onPick;
 
   @override
   Widget build(BuildContext context) {
@@ -768,120 +765,87 @@ class _CaptureArea extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 240),
-          child: AspectRatio(
-            aspectRatio: 16 / 9,
-            child: Container(
-              decoration: BoxDecoration(
+        Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 240),
+            child: AspectRatio(
+              aspectRatio: 16 / 9,
+              child: Material(
                 color: const Color(0xFFF7F8FA),
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: SpeedColors.line),
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  if (hasImage)
-                    Image.memory(imageBytes!, fit: BoxFit.cover)
-                  else
-                    const Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.directions_car_filled_outlined,
-                            size: 34,
-                            color: SpeedColors.inkFaint,
-                          ),
-                          SizedBox(height: 8),
-                          Text(
-                            'No plate captured yet',
-                            style: TextStyle(
-                              color: SpeedColors.inkFaint,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: busy ? null : onPick,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: SpeedColors.line),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (hasImage)
+                          Image.memory(imageBytes!, fit: BoxFit.cover)
+                        else
+                          const Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.add_a_photo_outlined,
+                                  size: 30,
+                                  color: SpeedColors.inkFaint,
+                                ),
+                                SizedBox(height: 8),
+                                Text(
+                                  'No plate captured yet',
+                                  style: TextStyle(
+                                    color: SpeedColors.inkFaint,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                SizedBox(height: 2),
+                                Text(
+                                  'Tap to upload a vehicle photo',
+                                  style: TextStyle(
+                                    color: SpeedColors.inkFaint,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
-                        ],
-                      ),
+                        const _CornerBrackets(),
+                        if (hasImage)
+                          Positioned(
+                            top: 10,
+                            right: 10,
+                            child: _GhostChip(
+                              icon: Icons.refresh,
+                              label: 'Retake',
+                              onTap: busy ? null : onPick,
+                            ),
+                          ),
+                      ],
                     ),
-                  const _CornerBrackets(),
-                  if (hasImage)
-                    Positioned(
-                      top: 10,
-                      right: 10,
-                      child: _GhostChip(
-                        icon: Icons.refresh,
-                        label: 'Retake',
-                        onTap: busy ? null : onGallery,
-                      ),
-                    ),
-                ],
+                  ),
+                ),
               ),
             ),
           ),
         ),
         if (imageName != null) ...[
           const SizedBox(height: 8),
-          Text(
-            imageName!,
-            style: const TextStyle(color: SpeedColors.inkFaint, fontSize: 11),
+          Center(
+            child: Text(
+              imageName!,
+              style: const TextStyle(color: SpeedColors.inkFaint, fontSize: 11),
+            ),
           ),
         ],
-        const SizedBox(height: 12),
-        FilledButton.icon(
-          onPressed: busy ? null : () => _pickSource(context),
-          icon: const Icon(Icons.add_a_photo_outlined, size: 18),
-          label: Text(hasImage ? 'Retake Photo' : 'Add Photo'),
-        ),
       ],
     );
-  }
-
-  Future<void> _pickSource(BuildContext context) async {
-    final action = await showModalBottomSheet<VoidCallback>(
-      context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 10),
-            Container(
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: SpeedColors.line,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const SizedBox(height: 8),
-            ListTile(
-              leading: const Icon(
-                Icons.photo_camera_outlined,
-                color: SpeedColors.navy,
-              ),
-              title: const Text('Use Camera'),
-              onTap: () => Navigator.pop(sheetContext, onCamera),
-            ),
-            ListTile(
-              leading: const Icon(
-                Icons.upload_file_outlined,
-                color: SpeedColors.navy,
-              ),
-              title: const Text('Pick File'),
-              onTap: () => Navigator.pop(sheetContext, onGallery),
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-    action?.call();
   }
 }
 

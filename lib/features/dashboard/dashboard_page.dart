@@ -104,8 +104,7 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Widget _heroCard(BuildContext context, Map<String, dynamic>? user) {
-    final hasUser =
-        user != null && (user['email']?.toString().isNotEmpty ?? false);
+    final hasUser = user != null && (user['email']?.toString().isNotEmpty ?? false);
     final email = hasUser ? user['email'].toString() : null;
     final role = hasUser ? (user['role']?.toString() ?? '-') : null;
 
@@ -132,11 +131,7 @@ class _DashboardPageState extends State<DashboardPage> {
                         fontWeight: FontWeight.w700,
                       ),
                     )
-                  : const Icon(
-                      Icons.person_outline,
-                      color: Colors.white,
-                      size: 22,
-                    ),
+                  : const Icon(Icons.person_outline, color: Colors.white, size: 22),
             ),
           ),
           const SizedBox(width: 14),
@@ -179,19 +174,14 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  hasUser
-                      ? '$_greeting, ${email!.split('@').first}'
-                      : 'Loading…',
+                  hasUser ? '$_greeting, ${email!.split('@').first}' : 'Loading…',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 if (hasUser) ...[
                   const SizedBox(height: 2),
                   Text(
                     email!,
-                    style: const TextStyle(
-                      color: SpeedColors.inkSoft,
-                      fontSize: 13,
-                    ),
+                    style: const TextStyle(color: SpeedColors.inkSoft, fontSize: 13),
                   ),
                 ],
               ],
@@ -207,9 +197,10 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
               child: Text(
                 role,
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: const Color(0xFF6B4708),
-                ),
+                style: Theme.of(context)
+                    .textTheme
+                    .labelSmall
+                    ?.copyWith(color: const Color(0xFF6B4708)),
               ),
             ),
         ],
@@ -220,7 +211,7 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget _quickActionsGrid(BuildContext context) {
     final actions = <_QuickAction>[
       _QuickAction(
-        title: 'Entry',
+        title: 'Scan and Chat',
         description:
             'Capture a plate, confirm direction, and continue the drive-thru assistant flow.',
         icon: Icons.camera_alt_outlined,
@@ -258,10 +249,10 @@ class _DashboardPageState extends State<DashboardPage> {
         final columns = width >= 1000
             ? 4
             : width >= 720
-            ? 3
-            : width >= 460
-            ? 2
-            : 1;
+                ? 3
+                : width >= 460
+                    ? 2
+                    : 1;
 
         return GridView.builder(
           shrinkWrap: true,
@@ -315,7 +306,10 @@ class _DashboardPageState extends State<DashboardPage> {
           Expanded(
             child: Text(
               action.description,
-              style: const TextStyle(color: SpeedColors.inkSoft, height: 1.35),
+              style: const TextStyle(
+                color: SpeedColors.inkSoft,
+                height: 1.35,
+              ),
               maxLines: 3,
               overflow: TextOverflow.ellipsis,
             ),
