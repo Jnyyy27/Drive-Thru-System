@@ -26,15 +26,22 @@ class MenuPage extends StatefulWidget {
 class _MenuPageState extends State<MenuPage> {
   late Future<Map<String, dynamic>> _menuFuture;
   final TextEditingController _chatController = TextEditingController();
+  final ScrollController _chatScrollController = ScrollController();
   final VoiceAssistantController _voice = VoiceAssistantController();
   final List<Map<String, dynamic>> _chatHistory = <Map<String, dynamic>>[];
   bool _chatBusy = false;
   String? _chatStatus;
   String? _plateNumber;
   String _direction = 'IN';
+  String? _selectedCategory;
   List<Map<String, dynamic>> _menuContextItems = const <Map<String, dynamic>>[];
   int _voiceSessionId = 0;
   bool _voiceAutoSubmitting = false;
+
+  // Assistant is a floating bubble here too, matching the scan page,
+  // instead of a bar permanently docked over the menu list.
+  bool _assistantExpanded = false;
+  bool _assistantUnread = false;
 
   @override
   void initState() {
@@ -52,6 +59,10 @@ class _MenuPageState extends State<MenuPage> {
         'role': 'assistant',
         'content': widget.initialAssistantMessage!.trim(),
       });
+      // Arriving here with a welcome message means the assistant has
+      // something to say right away — open it instead of leaving the
+      // operator to notice and tap the bubble themselves.
+      _assistantExpanded = true;
       _voice.speak(widget.initialAssistantMessage!.trim());
     }
   }
@@ -68,6 +79,7 @@ class _MenuPageState extends State<MenuPage> {
     _voice.removeListener(_onVoiceChanged);
     _voice.dispose();
     _chatController.dispose();
+    _chatScrollController.dispose();
     super.dispose();
   }
 
@@ -77,6 +89,37 @@ class _MenuPageState extends State<MenuPage> {
       _menuFuture = future;
     });
     await future;
+  }
+
+  void _openAssistant() {
+    setState(() {
+      _assistantExpanded = true;
+      _assistantUnread = false;
+    });
+  }
+
+  void _closeAssistant() {
+    setState(() {
+      _assistantExpanded = false;
+    });
+  }
+
+  void _scrollChatToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_chatScrollController.hasClients) return;
+      _chatScrollController.animateTo(
+        _chatScrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  void _appendChat(Map<String, dynamic> entry) {
+    _chatHistory.add(entry);
+    if (!_assistantExpanded) {
+      _assistantUnread = true;
+    }
   }
 
   Future<void> _sendChat() async {
@@ -98,8 +141,9 @@ class _MenuPageState extends State<MenuPage> {
     setState(() {
       _chatBusy = true;
       _chatStatus = null;
-      _chatHistory.add({'role': 'user', 'content': message});
+      _appendChat({'role': 'user', 'content': message});
     });
+    _scrollChatToBottom();
 
     try {
       final result = await widget.authSession.apiClient.assistantChat(
@@ -120,10 +164,11 @@ class _MenuPageState extends State<MenuPage> {
           _direction = responseDirection;
         }
         if (reply.isNotEmpty) {
-          _chatHistory.add({'role': 'assistant', 'content': reply});
+          _appendChat({'role': 'assistant', 'content': reply});
         }
         _chatController.clear();
       });
+      _scrollChatToBottom();
 
       if (reply.isNotEmpty) {
         await _voice.speak(reply);
@@ -229,6 +274,8 @@ class _MenuPageState extends State<MenuPage> {
               .map((category) => category.toString())
               .toList();
 
+          // Assistant context always sees the full menu, independent of
+          // whatever category filter the operator currently has active.
           _menuContextItems = items
               .map(
                 (item) => <String, dynamic>{
@@ -241,127 +288,454 @@ class _MenuPageState extends State<MenuPage> {
               )
               .toList();
 
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Browse the current burgers, sides, and drinks on offer.',
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final category in categories) SpeedPill(text: category),
-                ],
-              ),
-              const SizedBox(height: 14),
-              Expanded(
-                child: Stack(
-                  children: [
-                    ListView.separated(
-                      padding: const EdgeInsets.only(bottom: 260),
-                      itemBuilder: (context, index) {
-                        final item = items[index];
-                        final isAvailable =
-                            item['available'] == true || item['available'] == 1;
-                        final imageUrl = item['image_url']?.toString();
+          final filteredItems = _selectedCategory == null
+              ? items
+              : items
+                    .where(
+                      (item) =>
+                          (item['category']?.toString() ?? '') ==
+                          _selectedCategory,
+                    )
+                    .toList();
 
-                        return SpeedCard(
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              _MenuImageThumb(imageUrl: imageUrl),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: Text(
-                                            item['name']?.toString() ?? '-',
-                                            style: Theme.of(
-                                              context,
-                                            ).textTheme.titleMedium,
-                                          ),
+          return LayoutBuilder(
+            builder: (context, constraints) {
+              final isNarrow = constraints.maxWidth < 640;
+              final panelMaxHeight = (constraints.maxHeight - 48).clamp(
+                320.0,
+                560.0,
+              );
+
+              return Stack(
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Browse the current burgers, sides, and drinks on offer.',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                      const SizedBox(height: 14),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _CategoryChip(
+                            label: 'All',
+                            selected: _selectedCategory == null,
+                            onTap: () =>
+                                setState(() => _selectedCategory = null),
+                          ),
+                          for (final category in categories)
+                            _CategoryChip(
+                              label: category,
+                              selected: _selectedCategory == category,
+                              onTap: () =>
+                                  setState(() => _selectedCategory = category),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      Expanded(
+                        child: RefreshIndicator(
+                          onRefresh: _refresh,
+                          child: filteredItems.isEmpty
+                              ? ListView(
+                                  padding: const EdgeInsets.only(bottom: 88),
+                                  children: const [
+                                    SizedBox(height: 80),
+                                    Center(
+                                      child: Text(
+                                        'No items in this category.',
+                                        style: TextStyle(
+                                          color: SpeedColors.inkSoft,
                                         ),
-                                        Text(
-                                          'RM ${item['price'] ?? '-'}',
-                                          style: const TextStyle(
-                                            color: SpeedColors.navy,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 8),
-                                    Text(
-                                      item['description']?.toString() ??
-                                          'No description',
-                                      style: const TextStyle(
-                                        color: SpeedColors.inkSoft,
-                                        height: 1.35,
                                       ),
                                     ),
-                                    const SizedBox(height: 10),
-                                    Wrap(
-                                      spacing: 8,
-                                      children: [
-                                        SpeedPill(
-                                          text:
-                                              item['category']?.toString() ??
-                                              '-',
-                                        ),
-                                        isAvailable
-                                            ? const SpeedBadge(
-                                                text: 'Available',
-                                                background: Color(0xFFEAF7EF),
-                                                foreground: Color(0xFF1F7A4D),
-                                              )
-                                            : const SpeedBadge(
-                                                text: 'Unavailable',
-                                                background: Color(0xFFFFF3DC),
-                                                foreground: Color(0xFF6B4708),
-                                              ),
-                                      ],
-                                    ),
                                   ],
+                                )
+                              : ListView.separated(
+                                  padding: const EdgeInsets.only(bottom: 88),
+                                  itemBuilder: (context, index) {
+                                    final item = filteredItems[index];
+                                    final isAvailable =
+                                        item['available'] == true ||
+                                        item['available'] == 1;
+                                    final imageUrl = item['image_url']
+                                        ?.toString();
+
+                                    return Opacity(
+                                      opacity: isAvailable ? 1.0 : 0.55,
+                                      child: SpeedCard(
+                                        child: Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            _MenuImageThumb(imageUrl: imageUrl),
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Row(
+                                                    children: [
+                                                      Expanded(
+                                                        child: Text(
+                                                          item['name']
+                                                                  ?.toString() ??
+                                                              '-',
+                                                          style:
+                                                              Theme.of(context)
+                                                                  .textTheme
+                                                                  .titleMedium,
+                                                        ),
+                                                      ),
+                                                      Text(
+                                                        'RM ${item['price'] ?? '-'}',
+                                                        style: const TextStyle(
+                                                          color:
+                                                              SpeedColors.navy,
+                                                          fontWeight:
+                                                              FontWeight.w700,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                  const SizedBox(height: 8),
+                                                  Text(
+                                                    item['description']
+                                                            ?.toString() ??
+                                                        'No description',
+                                                    style: const TextStyle(
+                                                      color:
+                                                          SpeedColors.inkSoft,
+                                                      height: 1.35,
+                                                    ),
+                                                  ),
+                                                  const SizedBox(height: 10),
+                                                  Wrap(
+                                                    spacing: 8,
+                                                    children: [
+                                                      SpeedPill(
+                                                        text:
+                                                            item['category']
+                                                                ?.toString() ??
+                                                            '-',
+                                                      ),
+                                                      isAvailable
+                                                          ? const SpeedBadge(
+                                                              text: 'Available',
+                                                              background: Color(
+                                                                0xFFEAF7EF,
+                                                              ),
+                                                              foreground: Color(
+                                                                0xFF1F7A4D,
+                                                              ),
+                                                            )
+                                                          : const SpeedBadge(
+                                                              text:
+                                                                  'Unavailable',
+                                                              background: Color(
+                                                                0xFFFFF3DC,
+                                                              ),
+                                                              foreground: Color(
+                                                                0xFF6B4708,
+                                                              ),
+                                                            ),
+                                                    ],
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                  separatorBuilder: (_, _) =>
+                                      const SizedBox(height: 12),
+                                  itemCount: filteredItems.length,
                                 ),
-                              ),
-                            ],
-                          ),
-                        );
-                      },
-                      separatorBuilder: (_, _) => const SizedBox(height: 12),
-                      itemCount: items.length,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Positioned(
+                    right: 16,
+                    bottom: 8,
+                    left: isNarrow && _assistantExpanded ? 16 : null,
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 220),
+                      transitionBuilder: (child, animation) => ScaleTransition(
+                        scale: animation,
+                        alignment: Alignment.bottomRight,
+                        child: FadeTransition(opacity: animation, child: child),
+                      ),
+                      child: _assistantExpanded
+                          ? _buildAssistantPanel(
+                              key: const ValueKey('panel'),
+                              width: isNarrow ? null : 380,
+                              maxHeight: panelMaxHeight,
+                            )
+                          : _buildAssistantBubble(
+                              key: const ValueKey('bubble'),
+                            ),
                     ),
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      child: _MenuChatbot(
-                        busy: _chatBusy,
-                        status: _chatStatus,
-                        voiceStatus: _voice.statusText,
-                        isListening: _voice.isListening,
-                        history: _chatHistory,
-                        controller: _chatController,
-                        plateNumber: _plateNumber,
-                        direction: _direction,
-                        onSend: _sendChat,
-                        onToggleVoiceInput: _toggleVoiceInput,
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildAssistantBubble({Key? key}) {
+    return InkWell(
+      key: key,
+      onTap: _openAssistant,
+      borderRadius: BorderRadius.circular(32),
+      child: Container(
+        width: 64,
+        height: 64,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: const LinearGradient(
+            colors: [Color(0xFF17355E), Color(0xFF1E4A78)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: SpeedColors.navy.withValues(alpha: 0.35),
+              blurRadius: 18,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            const Center(
+              child: Icon(
+                Icons.support_agent,
+                color: Color(0xFFFFD67A),
+                size: 30,
+              ),
+            ),
+            if (_assistantUnread)
+              Positioned(
+                top: 2,
+                right: 2,
+                child: Container(
+                  width: 12,
+                  height: 12,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE0554F),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAssistantPanel({
+    Key? key,
+    double? width,
+    required double maxHeight,
+  }) {
+    final content = Container(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF10223D), Color(0xFF17355E), Color(0xFF1E4A78)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0x33FFFFFF)),
+        boxShadow: [
+          BoxShadow(
+            color: SpeedColors.navy.withValues(alpha: 0.35),
+            blurRadius: 24,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(18),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: const Color(0x24FFFFFF),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(
+                  Icons.support_agent,
+                  color: Color(0xFFFFD67A),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Drive-Thru Assistant',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.8,
+                        color: Color(0xB3F6F9FC),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    const Text(
+                      'Speed Burger Assistant',
+                      style: TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFFF6F9FC),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Plate: ${_plateNumber ?? '-'} · Direction: $_direction',
+                      style: const TextStyle(
+                        color: Color(0xCCF6F9FC),
+                        fontSize: 12,
                       ),
                     ),
                   ],
                 ),
               ),
+              IconButton(
+                onPressed: _closeAssistant,
+                icon: const Icon(Icons.close, color: Color(0xB3F6F9FC)),
+                tooltip: 'Minimize assistant',
+                visualDensity: VisualDensity.compact,
+              ),
             ],
-          );
-        },
+          ),
+          if (_chatStatus != null && _chatStatus!.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              _chatStatus!,
+              style: const TextStyle(color: Color(0x99F6F9FC), fontSize: 12),
+            ),
+          ],
+          if ((_voice.statusText ?? '').trim().isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              _voice.statusText!,
+              style: const TextStyle(color: Color(0xCCF6F9FC), fontSize: 12),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Flexible(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 100),
+              child: _chatHistory.isEmpty
+                  ? const _MenuBubble(
+                      text:
+                          'Submit entry from scan to start the menu assistant.',
+                      isUser: false,
+                    )
+                  : ListView.builder(
+                      controller: _chatScrollController,
+                      shrinkWrap: true,
+                      itemCount: _chatHistory.length,
+                      itemBuilder: (context, index) {
+                        final entry = _chatHistory[index];
+                        return _MenuBubble(
+                          text: (entry['content'] ?? '').toString(),
+                          isUser: entry['role'] == 'user',
+                        );
+                      },
+                    ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _chatController,
+                  minLines: 1,
+                  maxLines: 3,
+                  style: const TextStyle(color: Color(0xFFF6F9FC)),
+                  onSubmitted: _chatBusy ? null : (_) => _sendChat(),
+                  decoration: InputDecoration(
+                    hintText: 'Ask for order suggestions...',
+                    hintStyle: const TextStyle(color: Color(0x99F6F9FC)),
+                    filled: true,
+                    fillColor: const Color(0x55050C14),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: Color(0x40FFFFFF)),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: Color(0x40FFFFFF)),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _chatBusy ? null : _sendChat,
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFFFD67A),
+                  foregroundColor: const Color(0xFF16253E),
+                ),
+                child: _chatBusy
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Color(0xFF16253E),
+                        ),
+                      )
+                    : const Text('Send'),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filledTonal(
+                onPressed: _chatBusy ? null : _toggleVoiceInput,
+                style: IconButton.styleFrom(
+                  backgroundColor: _voice.isListening
+                      ? const Color(0xFFFFD67A)
+                      : const Color(0x29FFFFFF),
+                  foregroundColor: _voice.isListening
+                      ? const Color(0xFF16253E)
+                      : Colors.white,
+                ),
+                icon: Icon(_voice.isListening ? Icons.mic : Icons.mic_none),
+                tooltip: _voice.isListening
+                    ? 'Stop voice input'
+                    : 'Start voice input',
+              ),
+            ],
+          ),
+        ],
       ),
+    );
+
+    return KeyedSubtree(
+      key: key,
+      child: width != null ? SizedBox(width: width, child: content) : content,
     );
   }
 }
@@ -385,6 +759,48 @@ class _ErrorState extends StatelessWidget {
               const SizedBox(height: 16),
               FilledButton(onPressed: onRetry, child: const Text('Retry')),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Clickable category filter chip. SpeedPill has no selected state, so
+/// this is a small local variant that fills with the navy accent when
+/// active instead of always looking the same regardless of selection.
+class _CategoryChip extends StatelessWidget {
+  const _CategoryChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 140),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? SpeedColors.navy : SpeedColors.surface,
+          border: Border.all(
+            color: selected ? SpeedColors.navy : SpeedColors.line,
+          ),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? Colors.white : SpeedColors.inkSoft,
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            fontSize: 13,
           ),
         ),
       ),
@@ -446,155 +862,6 @@ class _MenuImageThumb extends StatelessWidget {
   }
 }
 
-class _MenuChatbot extends StatelessWidget {
-  const _MenuChatbot({
-    required this.busy,
-    required this.status,
-    required this.voiceStatus,
-    required this.isListening,
-    required this.history,
-    required this.controller,
-    required this.plateNumber,
-    required this.direction,
-    required this.onSend,
-    required this.onToggleVoiceInput,
-  });
-
-  final bool busy;
-  final String? status;
-  final String? voiceStatus;
-  final bool isListening;
-  final List<Map<String, dynamic>> history;
-  final TextEditingController controller;
-  final String? plateNumber;
-  final String direction;
-  final VoidCallback onSend;
-  final VoidCallback onToggleVoiceInput;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF10223D), Color(0xFF17355E), Color(0xFF1E4A78)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0x33FFFFFF)),
-      ),
-      padding: const EdgeInsets.all(12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Speed Burger Assistant',
-            style: TextStyle(
-              color: Color(0xFFF6F9FC),
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Plate: ${plateNumber ?? '-'} · Direction: $direction',
-            style: const TextStyle(color: Color(0xCCF6F9FC), fontSize: 12),
-          ),
-          if (status != null && status!.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              status!,
-              style: const TextStyle(color: Color(0x99F6F9FC), fontSize: 12),
-            ),
-          ],
-          if (voiceStatus != null && voiceStatus!.isNotEmpty) ...[
-            const SizedBox(height: 4),
-            Text(
-              voiceStatus!,
-              style: const TextStyle(color: Color(0xCCF6F9FC), fontSize: 12),
-            ),
-          ],
-          const SizedBox(height: 8),
-          SizedBox(
-            height: 100,
-            child: SingleChildScrollView(
-              child: history.isEmpty
-                  ? const _MenuBubble(
-                      text:
-                          'Submit entry from scan to start the menu assistant.',
-                      isUser: false,
-                    )
-                  : Column(
-                      children: history
-                          .map(
-                            (entry) => _MenuBubble(
-                              text: (entry['content'] ?? '').toString(),
-                              isUser: entry['role'] == 'user',
-                            ),
-                          )
-                          .toList(),
-                    ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: controller,
-                  minLines: 1,
-                  maxLines: 3,
-                  style: const TextStyle(
-                    color: Color(0xFFF6F9FC),
-                    fontSize: 13,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: 'Ask for order suggestions...',
-                    hintStyle: const TextStyle(color: Color(0x99F6F9FC)),
-                    isDense: true,
-                    filled: true,
-                    fillColor: const Color(0x55050C14),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: const BorderSide(color: Color(0x40FFFFFF)),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: const BorderSide(color: Color(0x40FFFFFF)),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              FilledButton(
-                onPressed: busy ? null : onSend,
-                style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFFFFD67A),
-                  foregroundColor: const Color(0xFF16253E),
-                ),
-                child: Text(busy ? '...' : 'Send'),
-              ),
-              const SizedBox(width: 8),
-              IconButton.filledTonal(
-                onPressed: busy ? null : onToggleVoiceInput,
-                style: IconButton.styleFrom(
-                  backgroundColor: isListening
-                      ? const Color(0xFFFFD67A)
-                      : const Color(0x29FFFFFF),
-                  foregroundColor: isListening
-                      ? const Color(0xFF16253E)
-                      : Colors.white,
-                ),
-                icon: Icon(isListening ? Icons.mic : Icons.mic_none),
-                tooltip: isListening ? 'Stop voice input' : 'Start voice input',
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _MenuBubble extends StatelessWidget {
   const _MenuBubble({required this.text, required this.isUser});
 
@@ -606,18 +873,19 @@ class _MenuBubble extends StatelessWidget {
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
-        margin: const EdgeInsets.only(bottom: 6),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+        constraints: const BoxConstraints(maxWidth: 380),
         decoration: BoxDecoration(
           color: isUser ? const Color(0xFFFFD67A) : const Color(0x29FFFFFF),
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(12),
         ),
         child: Text(
           text,
           style: TextStyle(
             color: isUser ? const Color(0xFF16253E) : Colors.white,
-            fontSize: 12.5,
-            height: 1.3,
+            fontWeight: isUser ? FontWeight.w600 : FontWeight.w500,
+            height: 1.35,
           ),
         ),
       ),
