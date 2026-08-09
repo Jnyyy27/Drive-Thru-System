@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -38,6 +39,13 @@ class _ScanChatPageState extends State<ScanChatPage> {
   final List<Map<String, dynamic>> _history = <Map<String, dynamic>>[];
   int _voiceSessionId = 0;
   bool _voiceAutoSubmitting = false;
+
+  // Success messages ("Plate detected…", "Vehicle recorded as IN/OUT")
+  // now surface as a brief floating toast at the top of the screen
+  // instead of a persistent banner inside the panel.
+  Timer? _toastTimer;
+  bool _toastVisible = false;
+  String? _toastText;
 
   // Assistant now lives as a floating bubble instead of a fixed side
   // panel, so we track whether it's expanded and whether a reply
@@ -85,6 +93,7 @@ class _ScanChatPageState extends State<ScanChatPage> {
     _voice.dispose();
     _messageController.dispose();
     _chatScrollController.dispose();
+    _toastTimer?.cancel();
     super.dispose();
   }
 
@@ -93,6 +102,19 @@ class _ScanChatPageState extends State<ScanChatPage> {
   void _setStatus(String text, _StatusKind kind) {
     _statusText = text;
     _statusKind = kind;
+    if (kind == _StatusKind.success) {
+      _flashToast(text);
+    }
+  }
+
+  void _flashToast(String text) {
+    _toastText = text;
+    _toastVisible = true;
+    _toastTimer?.cancel();
+    _toastTimer = Timer(const Duration(milliseconds: 2600), () {
+      if (!mounted) return;
+      setState(() => _toastVisible = false);
+    });
   }
 
   // Keeps the conversation pinned to the latest message instead of
@@ -329,7 +351,7 @@ class _ScanChatPageState extends State<ScanChatPage> {
     final theme = Theme.of(context);
 
     return SpeedShell(
-      title: 'Entry',
+      title: 'Scan and Assistant',
       subtitle: 'Speed Burger · Drive-Thru System',
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -393,6 +415,24 @@ class _ScanChatPageState extends State<ScanChatPage> {
                           maxHeight: panelMaxHeight,
                         )
                       : _buildAssistantBubble(key: const ValueKey('bubble')),
+                ),
+              ),
+              Positioned(
+                top: 4,
+                left: 16,
+                right: 16,
+                child: IgnorePointer(
+                  ignoring: !_toastVisible,
+                  child: AnimatedSlide(
+                    duration: const Duration(milliseconds: 220),
+                    curve: Curves.easeOut,
+                    offset: _toastVisible ? Offset.zero : const Offset(0, -0.4),
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 220),
+                      opacity: _toastVisible ? 1 : 0,
+                      child: _SuccessToast(text: _toastText ?? ''),
+                    ),
+                  ),
                 ),
               ),
             ],
@@ -473,7 +513,7 @@ class _ScanChatPageState extends State<ScanChatPage> {
             onPick: () => _pickAndDetect(ImageSource.gallery),
           ),
           const SizedBox(height: 18),
-          if (_statusText != null) ...[
+          if (_statusText != null && _statusKind != _StatusKind.success) ...[
             _StatusBanner(text: _statusText!, kind: _statusKind),
             const SizedBox(height: 16),
           ],
@@ -1081,6 +1121,53 @@ class _DirectionToggle extends StatelessWidget {
           _segment('IN', Icons.arrow_downward_rounded, 'IN'),
           _segment('OUT', Icons.arrow_upward_rounded, 'OUT'),
         ],
+      ),
+    );
+  }
+}
+
+/// Brief floating notification for success events ("Plate detected…",
+/// "Vehicle recorded as IN/OUT") shown at the top of the screen instead
+/// of sitting permanently inside the panel.
+class _SuccessToast extends StatelessWidget {
+  const _SuccessToast({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF1FAF4),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: SpeedColors.green.withValues(alpha: 0.45)),
+          boxShadow: [
+            BoxShadow(
+              color: SpeedColors.ink.withValues(alpha: 0.14),
+              blurRadius: 18,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.check_circle, color: SpeedColors.green, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                text,
+                style: const TextStyle(
+                  color: SpeedColors.green,
+                  fontWeight: FontWeight.w600,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
