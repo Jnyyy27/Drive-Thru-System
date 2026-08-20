@@ -105,16 +105,15 @@ class VoiceAssistantController extends ChangeNotifier {
     await _speech.cancel();
 
     await _speech.listen(
-      // ignore: deprecated_member_use
-      listenMode: stt.ListenMode.dictation,
-      // ignore: deprecated_member_use
-      partialResults: true,
-      // ignore: deprecated_member_use
-      cancelOnError: true,
-      // Auto-end the listening session when user pauses speaking.
-      pauseFor: const Duration(seconds: 4),
-      // Hard cap each session so status done/notListening is guaranteed.
-      listenFor: const Duration(seconds: 45),
+      listenOptions: stt.SpeechListenOptions(
+        listenMode: stt.ListenMode.dictation,
+        partialResults: true,
+        cancelOnError: true,
+        // Auto-end the listening session when user pauses speaking.
+        pauseFor: const Duration(seconds: 4),
+        // Hard cap each session so status done/notListening is guaranteed.
+        listenFor: const Duration(seconds: 45),
+      ),
       onResult: (result) {
         if (result.recognizedWords.isNotEmpty) {
           _lastWords = result.recognizedWords;

@@ -20,37 +20,55 @@ class SpeedShell extends StatelessWidget {
     required this.child,
     this.subtitle,
     this.trailing,
+    this.floating,
+    this.floatingPadding = const EdgeInsets.only(right: 20, bottom: 20),
   });
 
   final String title;
   final String? subtitle;
   final Widget child;
   final Widget? trailing;
+  final Widget? floating;
+  final EdgeInsets floatingPadding;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: SpeedColors.bg,
       body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 980),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 24, 20, 28),
-              child: Column(
-                children: [
-                  _Topbar(title: title, subtitle: subtitle, trailing: trailing),
-                  const SizedBox(height: 16),
-                  // Hairline separates the fixed console header from
-                  // scrolling content, so long pages (Logs/Orders) don't
-                  // make the header feel like it's part of the list.
-                  Container(height: 1, color: SpeedColors.line),
-                  const SizedBox(height: 20),
-                  Expanded(child: child),
-                ],
+        child: Stack(
+          children: [
+            Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 980),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 24, 20, 28),
+                  child: Column(
+                    children: [
+                      _Topbar(
+                        title: title,
+                        subtitle: subtitle,
+                        trailing: trailing,
+                      ),
+                      const SizedBox(height: 16),
+                      // Hairline separates the fixed console header from
+                      // scrolling content, so long pages (Logs/Orders) don't
+                      // make the header feel like it's part of the list.
+                      Container(height: 1, color: SpeedColors.line),
+                      const SizedBox(height: 20),
+                      Expanded(child: child),
+                    ],
+                  ),
+                ),
               ),
             ),
-          ),
+            if (floating != null)
+              Positioned(
+                right: floatingPadding.right,
+                bottom: floatingPadding.bottom,
+                child: floating!,
+              ),
+          ],
         ),
       ),
     );

@@ -43,6 +43,13 @@ class _MenuPageState extends State<MenuPage> {
   bool _assistantExpanded = false;
   bool _assistantUnread = false;
 
+  List<Map<String, dynamic>> _cartLines = <Map<String, dynamic>>[];
+  double _cartTotal = 0;
+  int? _cartOrderId;
+  String _cartOrderStatus = 'Pending';
+  bool _cartBusy = false;
+  String? _cartStatus;
+
   @override
   void initState() {
     super.initState();
@@ -64,6 +71,9 @@ class _MenuPageState extends State<MenuPage> {
       // operator to notice and tap the bubble themselves.
       _assistantExpanded = true;
       _voice.speak(widget.initialAssistantMessage!.trim());
+    }
+    if ((_plateNumber ?? '').isNotEmpty) {
+      _loadCart();
     }
   }
 
@@ -89,6 +99,9 @@ class _MenuPageState extends State<MenuPage> {
       _menuFuture = future;
     });
     await future;
+    if ((_plateNumber ?? '').isNotEmpty) {
+      await _loadCart();
+    }
   }
 
   void _openAssistant() {
@@ -154,6 +167,27 @@ class _MenuPageState extends State<MenuPage> {
         menuItems: _menuContextItems,
       );
 
+      final orderUpdate =
+          (result['order'] as Map?)?.cast<String, dynamic>() ??
+          const <String, dynamic>{};
+      final showCheckoutDialog =
+          orderUpdate['saved'] == true && orderUpdate['checkout'] == true;
+      final chatCheckoutLines =
+          ((orderUpdate['order_lines'] as List?) ?? const [])
+              .cast<Map>()
+              .map((line) => line.cast<String, dynamic>())
+              .toList();
+      final chatCheckoutOrderId = int.tryParse(
+        '${orderUpdate['order_id'] ?? ''}',
+      );
+      final chatCheckoutTotal =
+          double.tryParse('${orderUpdate['total_amount'] ?? ''}') ??
+          chatCheckoutLines.fold<double>(
+            0,
+            (sum, line) =>
+                sum + (double.tryParse('${line['subtotal'] ?? 0}') ?? 0),
+          );
+
       final reply = (result['reply'] ?? '').toString();
       final responseDirection = (result['direction'] ?? '')
           .toString()
@@ -173,6 +207,16 @@ class _MenuPageState extends State<MenuPage> {
       if (reply.isNotEmpty) {
         await _voice.speak(reply);
       }
+      if ((_plateNumber ?? '').isNotEmpty) {
+        await _loadCart();
+      }
+      if (showCheckoutDialog && mounted) {
+        await _showConfirmedOrderDialog(
+          orderId: chatCheckoutOrderId,
+          lines: chatCheckoutLines,
+          total: chatCheckoutTotal,
+        );
+      }
     } catch (error) {
       setState(() {
         _chatStatus = 'Chat failed: $error';
@@ -184,6 +228,424 @@ class _MenuPageState extends State<MenuPage> {
         });
       }
     }
+  }
+
+  int get _cartItemCount {
+    var total = 0;
+    for (final line in _cartLines) {
+      total += int.tryParse('${line['quantity'] ?? 0}') ?? 0;
+    }
+    return total;
+  }
+
+  bool get _canEditCart => _cartOrderStatus == 'Pending';
+
+  int _quantityForMenuItem(int menuId) {
+    for (final line in _cartLines) {
+      final lineMenuId = int.tryParse('${line['menu_id'] ?? ''}');
+      if (lineMenuId == menuId) {
+        return int.tryParse('${line['quantity'] ?? 0}') ?? 0;
+      }
+    }
+    return 0;
+  }
+
+  Future<void> _loadCart() async {
+    final plate = (_plateNumber ?? '').trim();
+    if (plate.isEmpty) {
+      return;
+    }
+    try {
+      final snapshot = await widget.authSession.apiClient.orderCart(
+        plateNumber: plate,
+      );
+      if (!mounted) return;
+      setState(() {
+        _applyCartSnapshot(snapshot);
+      });
+    } catch (_) {
+      // Keep UI usable even when cart refresh fails briefly.
+    }
+  }
+
+  void _applyCartSnapshot(Map<String, dynamic> snapshot) {
+    final lines = ((snapshot['lines'] as List?) ?? const [])
+        .cast<Map>()
+        .map((line) => line.cast<String, dynamic>())
+        .toList();
+
+    final order = (snapshot['order'] as Map?)?.cast<String, dynamic>();
+    _cartLines = lines;
+    _cartOrderId = order == null ? null : int.tryParse('${order['order_id']}');
+    _cartOrderStatus = (order?['status'] ?? 'Pending').toString();
+    _cartTotal =
+        double.tryParse('${order?['total_amount'] ?? 0}') ??
+        lines.fold<double>(
+          0,
+          (sum, line) =>
+              sum + (double.tryParse('${line['subtotal'] ?? 0}') ?? 0),
+        );
+    _cartStatus = null;
+  }
+
+  Future<void> _addToCart(Map<String, dynamic> item) async {
+    final plate = (_plateNumber ?? '').trim();
+    final menuId = int.tryParse('${item['menu_id'] ?? ''}');
+    if (plate.isEmpty || menuId == null) {
+      setState(() {
+        _cartStatus = 'Scan and submit entry first.';
+      });
+      return;
+    }
+
+    setState(() {
+      _cartBusy = true;
+      _cartStatus = null;
+    });
+    try {
+      final snapshot = await widget.authSession.apiClient.addCartItem(
+        plateNumber: plate,
+        menuId: menuId,
+        quantity: 1,
+      );
+      if (!mounted) return;
+      setState(() {
+        _applyCartSnapshot(snapshot);
+        _cartStatus = '${item['name']} added to cart.';
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _cartStatus = 'Add failed: $error';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _cartBusy = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _updateCartQuantity(int menuId, int quantity) async {
+    final plate = (_plateNumber ?? '').trim();
+    if (plate.isEmpty) {
+      return;
+    }
+
+    setState(() {
+      _cartBusy = true;
+      _cartStatus = null;
+    });
+    try {
+      final snapshot = await widget.authSession.apiClient
+          .updateCartItemQuantity(
+            plateNumber: plate,
+            menuId: menuId,
+            quantity: quantity,
+          );
+      if (!mounted) return;
+      setState(() {
+        _applyCartSnapshot(snapshot);
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _cartStatus = 'Cart update failed: $error';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _cartBusy = false;
+        });
+      }
+    }
+  }
+
+  Future<Map<String, dynamic>?> _confirmManualOrder() async {
+    final plate = (_plateNumber ?? '').trim();
+    if (plate.isEmpty) {
+      return null;
+    }
+
+    setState(() {
+      _cartBusy = true;
+      _cartStatus = null;
+    });
+    try {
+      final snapshot = await widget.authSession.apiClient.confirmCartOrder(
+        plateNumber: plate,
+      );
+      if (!mounted) return null;
+      setState(() {
+        _applyCartSnapshot(snapshot);
+        _cartStatus =
+            (snapshot['message'] ?? 'Order confirmed and sent to kitchen.')
+                .toString();
+      });
+      return snapshot;
+    } catch (error) {
+      if (!mounted) return null;
+      setState(() {
+        _cartStatus = 'Confirm failed: $error';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _cartBusy = false;
+        });
+      }
+    }
+    return null;
+  }
+
+  Future<void> _confirmManualOrderAndShowDialog() async {
+    if (!_canEditCart || _cartLines.isEmpty || _cartBusy) {
+      return;
+    }
+
+    final snapshot = await _confirmManualOrder();
+    if (!mounted || snapshot == null) {
+      return;
+    }
+
+    final order =
+        (snapshot['confirmed_order'] as Map?)?.cast<String, dynamic>() ??
+        (snapshot['order'] as Map?)?.cast<String, dynamic>();
+    final lines =
+        ((snapshot['confirmed_lines'] as List?) ??
+                (snapshot['lines'] as List?) ??
+                const [])
+            .cast<Map>()
+            .map((line) => line.cast<String, dynamic>())
+            .toList();
+    final total =
+        double.tryParse('${order?['total_amount'] ?? _cartTotal}') ??
+        _cartTotal;
+
+    await _showConfirmedOrderDialog(
+      orderId: int.tryParse('${order?['order_id'] ?? ''}'),
+      lines: lines,
+      total: total,
+    );
+  }
+
+  Future<void> _showConfirmedOrderDialog({
+    required int? orderId,
+    required List<Map<String, dynamic>> lines,
+    required double total,
+  }) async {
+    if (!mounted) {
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Order Confirmed'),
+          content: SizedBox(
+            width: 460,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  orderId == null
+                      ? 'Your order has been sent to kitchen.'
+                      : 'Order #$orderId has been sent to kitchen.',
+                ),
+                const SizedBox(height: 10),
+                _buildOrderDetailsList(maxHeight: 220, linesOverride: lines),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    const Text(
+                      'Total',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const Spacer(),
+                    Text(
+                      'RM ${total.toStringAsFixed(2)}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: SpeedColors.navy,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Done'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _incrementMenuItem(Map<String, dynamic> item) async {
+    final menuId = int.tryParse('${item['menu_id'] ?? ''}');
+    if (menuId == null) {
+      return;
+    }
+    final currentQty = _quantityForMenuItem(menuId);
+    if (currentQty <= 0) {
+      await _addToCart(item);
+      return;
+    }
+    await _updateCartQuantity(menuId, currentQty + 1);
+  }
+
+  Future<void> _decrementMenuItem(Map<String, dynamic> item) async {
+    final menuId = int.tryParse('${item['menu_id'] ?? ''}');
+    if (menuId == null) {
+      return;
+    }
+    final currentQty = _quantityForMenuItem(menuId);
+    if (currentQty <= 0) {
+      return;
+    }
+    await _updateCartQuantity(menuId, currentQty - 1);
+  }
+
+  List<String> _orderedCategories(List<String> rawCategories) {
+    const preferred = <String>['Burger', 'Side', 'Drink', 'Combo'];
+    final seen = <String>{};
+    final ordered = <String>[];
+
+    for (final category in preferred) {
+      ordered.add(category);
+      seen.add(category.toLowerCase());
+    }
+
+    for (final category in rawCategories) {
+      final cleaned = category.trim();
+      if (cleaned.isEmpty) continue;
+      final key = cleaned.toLowerCase();
+      if (seen.add(key)) {
+        ordered.add(cleaned);
+      }
+    }
+
+    return ordered;
+  }
+
+  Widget _buildOrderDetailsList({
+    required double maxHeight,
+    List<Map<String, dynamic>>? linesOverride,
+    bool editable = false,
+    Future<void> Function(int menuId, int nextQuantity)? onAdjustQuantity,
+  }) {
+    final lines = linesOverride ?? _cartLines;
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      child: lines.isEmpty
+          ? const Padding(
+              padding: EdgeInsets.symmetric(vertical: 6),
+              child: Text(
+                'No items in cart.',
+                style: TextStyle(color: SpeedColors.inkSoft),
+              ),
+            )
+          : ListView.separated(
+              shrinkWrap: true,
+              itemCount: lines.length,
+              separatorBuilder: (_, _) => const Divider(height: 14),
+              itemBuilder: (context, index) {
+                final line = lines[index];
+                final quantity = int.tryParse('${line['quantity'] ?? ''}') ?? 0;
+                final menuId = int.tryParse('${line['menu_id'] ?? ''}');
+                final unitPrice =
+                    double.tryParse('${line['unit_price'] ?? 0}') ?? 0;
+                final subtotal =
+                    double.tryParse('${line['subtotal'] ?? 0}') ?? 0;
+                final canEditLine =
+                    editable &&
+                    menuId != null &&
+                    _canEditCart &&
+                    !_cartBusy &&
+                    onAdjustQuantity != null;
+
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            line['name']?.toString() ?? '-',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '$quantity x RM ${unitPrice.toStringAsFixed(2)}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: SpeedColors.inkSoft,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (editable)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            onPressed: canEditLine && quantity > 0
+                                ? () => onAdjustQuantity(menuId!, quantity - 1)
+                                : null,
+                            icon: const Icon(Icons.remove_circle_outline),
+                            visualDensity: VisualDensity.compact,
+                            splashRadius: 16,
+                          ),
+                          SizedBox(
+                            width: 20,
+                            child: Text(
+                              '$quantity',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: canEditLine && quantity < 20
+                                ? () => onAdjustQuantity(menuId!, quantity + 1)
+                                : null,
+                            icon: const Icon(Icons.add_circle_outline),
+                            visualDensity: VisualDensity.compact,
+                            splashRadius: 16,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'RM ${subtotal.toStringAsFixed(2)}',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              color: SpeedColors.navy,
+                            ),
+                          ),
+                        ],
+                      )
+                    else
+                      Text(
+                        'RM ${subtotal.toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: SpeedColors.navy,
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+    );
   }
 
   Future<void> _toggleVoiceInput() async {
@@ -245,6 +707,14 @@ class _MenuPageState extends State<MenuPage> {
 
   @override
   Widget build(BuildContext context) {
+    const normalSidePanelWidth = 360.0;
+    final viewport = MediaQuery.sizeOf(context);
+    final sideGutter = ((viewport.width - 980) / 2).clamp(0.0, double.infinity);
+    final canDockSideBubble = sideGutter >= 96;
+    final sidePanelWidth = normalSidePanelWidth;
+    final sidePanelMaxHeight = (viewport.height - 120).clamp(320.0, 560.0);
+    final useSideFloating = canDockSideBubble;
+
     return SpeedShell(
       title: 'Menu',
       subtitle: 'Speed Burger · Drive-Thru System',
@@ -252,6 +722,23 @@ class _MenuPageState extends State<MenuPage> {
         onPressed: () => context.go('/dashboard'),
         child: const Text('Dashboard'),
       ),
+      floating: useSideFloating
+          ? AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              transitionBuilder: (child, animation) => ScaleTransition(
+                scale: animation,
+                alignment: Alignment.bottomRight,
+                child: FadeTransition(opacity: animation, child: child),
+              ),
+              child: _assistantExpanded
+                  ? _buildAssistantPanel(
+                      key: const ValueKey('panel-side'),
+                      width: sidePanelWidth,
+                      maxHeight: sidePanelMaxHeight,
+                    )
+                  : _buildAssistantBubble(key: const ValueKey('bubble-side')),
+            )
+          : null,
       child: FutureBuilder<Map<String, dynamic>>(
         future: _menuFuture,
         builder: (context, snapshot) {
@@ -273,6 +760,7 @@ class _MenuPageState extends State<MenuPage> {
           final categories = ((data['categories'] as List?) ?? const [])
               .map((category) => category.toString())
               .toList();
+          final orderedCategories = _orderedCategories(categories);
 
           // Assistant context always sees the full menu, independent of
           // whatever category filter the operator currently has active.
@@ -280,6 +768,7 @@ class _MenuPageState extends State<MenuPage> {
               .map(
                 (item) => <String, dynamic>{
                   'name': item['name']?.toString() ?? '',
+                  'category': item['category']?.toString() ?? '',
                   'price': item['price'],
                   'description': item['description']?.toString() ?? '',
                   'available':
@@ -305,6 +794,7 @@ class _MenuPageState extends State<MenuPage> {
                 320.0,
                 560.0,
               );
+              final listBottomPadding = useSideFloating ? 12.0 : 16.0;
 
               return Stack(
                 children: [
@@ -316,23 +806,90 @@ class _MenuPageState extends State<MenuPage> {
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                       const SizedBox(height: 14),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          _CategoryChip(
-                            label: 'All',
-                            selected: _selectedCategory == null,
-                            onTap: () =>
-                                setState(() => _selectedCategory = null),
-                          ),
-                          for (final category in categories)
-                            _CategoryChip(
-                              label: category,
-                              selected: _selectedCategory == category,
-                              onTap: () =>
-                                  setState(() => _selectedCategory = category),
+                          Expanded(
+                            child: Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                _CategoryChip(
+                                  label: 'All',
+                                  selected: _selectedCategory == null,
+                                  onTap: () =>
+                                      setState(() => _selectedCategory = null),
+                                ),
+                                for (final category in orderedCategories)
+                                  _CategoryChip(
+                                    label: category,
+                                    selected: _selectedCategory == category,
+                                    onTap: () => setState(
+                                      () => _selectedCategory = category,
+                                    ),
+                                  ),
+                              ],
                             ),
+                          ),
+                          const SizedBox(width: 10),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  IconButton.filledTonal(
+                                    onPressed: (_plateNumber ?? '').isEmpty
+                                        ? null
+                                        : _openCartDialog,
+                                    tooltip: 'Open cart',
+                                    icon: const Icon(
+                                      Icons.shopping_cart,
+                                      size: 20,
+                                    ),
+                                  ),
+                                  if (_cartItemCount > 0)
+                                    Positioned(
+                                      right: -2,
+                                      top: -2,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 5,
+                                          vertical: 1,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFE0554F),
+                                          borderRadius: BorderRadius.circular(
+                                            10,
+                                          ),
+                                          border: Border.all(
+                                            color: Colors.white,
+                                            width: 1.2,
+                                          ),
+                                        ),
+                                        child: Text(
+                                          '$_cartItemCount',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'RM ${_cartTotal.toStringAsFixed(2)}',
+                                style: const TextStyle(
+                                  color: SpeedColors.navy,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
                         ],
                       ),
                       const SizedBox(height: 14),
@@ -341,7 +898,9 @@ class _MenuPageState extends State<MenuPage> {
                           onRefresh: _refresh,
                           child: filteredItems.isEmpty
                               ? ListView(
-                                  padding: const EdgeInsets.only(bottom: 88),
+                                  padding: EdgeInsets.only(
+                                    bottom: listBottomPadding,
+                                  ),
                                   children: const [
                                     SizedBox(height: 80),
                                     Center(
@@ -355,7 +914,9 @@ class _MenuPageState extends State<MenuPage> {
                                   ],
                                 )
                               : ListView.separated(
-                                  padding: const EdgeInsets.only(bottom: 88),
+                                  padding: EdgeInsets.only(
+                                    bottom: listBottomPadding,
+                                  ),
                                   itemBuilder: (context, index) {
                                     final item = filteredItems[index];
                                     final isAvailable =
@@ -391,6 +952,28 @@ class _MenuPageState extends State<MenuPage> {
                                                                   .titleMedium,
                                                         ),
                                                       ),
+                                                      const SizedBox(width: 8),
+                                                      isAvailable
+                                                          ? const SpeedBadge(
+                                                              text: 'Available',
+                                                              background: Color(
+                                                                0xFFEAF7EF,
+                                                              ),
+                                                              foreground: Color(
+                                                                0xFF1F7A4D,
+                                                              ),
+                                                            )
+                                                          : const SpeedBadge(
+                                                              text:
+                                                                  'Unavailable',
+                                                              background: Color(
+                                                                0xFFFFF3DC,
+                                                              ),
+                                                              foreground: Color(
+                                                                0xFF6B4708,
+                                                              ),
+                                                            ),
+                                                      const SizedBox(width: 8),
                                                       Text(
                                                         'RM ${item['price'] ?? '-'}',
                                                         style: const TextStyle(
@@ -423,26 +1006,54 @@ class _MenuPageState extends State<MenuPage> {
                                                                 ?.toString() ??
                                                             '-',
                                                       ),
-                                                      isAvailable
-                                                          ? const SpeedBadge(
-                                                              text: 'Available',
-                                                              background: Color(
-                                                                0xFFEAF7EF,
-                                                              ),
-                                                              foreground: Color(
-                                                                0xFF1F7A4D,
-                                                              ),
-                                                            )
-                                                          : const SpeedBadge(
-                                                              text:
-                                                                  'Unavailable',
-                                                              background: Color(
-                                                                0xFFFFF3DC,
-                                                              ),
-                                                              foreground: Color(
-                                                                0xFF6B4708,
-                                                              ),
-                                                            ),
+                                                    ],
+                                                  ),
+                                                  const SizedBox(height: 10),
+                                                  Row(
+                                                    children: [
+                                                      const Spacer(),
+                                                      IconButton(
+                                                        onPressed:
+                                                            !isAvailable ||
+                                                                _cartBusy ||
+                                                                (_plateNumber ??
+                                                                        '')
+                                                                    .isEmpty ||
+                                                                !_canEditCart
+                                                            ? null
+                                                            : () =>
+                                                                  _decrementMenuItem(
+                                                                    item,
+                                                                  ),
+                                                        icon: const Icon(
+                                                          Icons
+                                                              .remove_circle_outline,
+                                                        ),
+                                                      ),
+                                                      Text(
+                                                        '${_quantityForMenuItem(int.tryParse('${item['menu_id'] ?? ''}') ?? -1)}',
+                                                        style: const TextStyle(
+                                                          fontWeight:
+                                                              FontWeight.w700,
+                                                        ),
+                                                      ),
+                                                      IconButton(
+                                                        onPressed:
+                                                            !isAvailable ||
+                                                                _cartBusy ||
+                                                                (_plateNumber ??
+                                                                        '')
+                                                                    .isEmpty ||
+                                                                !_canEditCart
+                                                            ? null
+                                                            : () =>
+                                                                  _incrementMenuItem(
+                                                                    item,
+                                                                  ),
+                                                        icon: const Icon(
+                                                          Icons.add_circle,
+                                                        ),
+                                                      ),
                                                     ],
                                                   ),
                                                 ],
@@ -459,36 +1070,149 @@ class _MenuPageState extends State<MenuPage> {
                                 ),
                         ),
                       ),
+                      if ((_cartStatus ?? '').isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          _cartStatus!,
+                          style: const TextStyle(
+                            color: SpeedColors.inkSoft,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
-                  Positioned(
-                    right: 16,
-                    bottom: 8,
-                    left: isNarrow && _assistantExpanded ? 16 : null,
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 220),
-                      transitionBuilder: (child, animation) => ScaleTransition(
-                        scale: animation,
-                        alignment: Alignment.bottomRight,
-                        child: FadeTransition(opacity: animation, child: child),
-                      ),
-                      child: _assistantExpanded
-                          ? _buildAssistantPanel(
-                              key: const ValueKey('panel'),
-                              width: isNarrow ? null : 380,
-                              maxHeight: panelMaxHeight,
-                            )
-                          : _buildAssistantBubble(
-                              key: const ValueKey('bubble'),
+                  if (!useSideFloating)
+                    Positioned(
+                      right: 16,
+                      bottom: 8,
+                      left: isNarrow && _assistantExpanded ? 16 : null,
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 220),
+                        transitionBuilder: (child, animation) =>
+                            ScaleTransition(
+                              scale: animation,
+                              alignment: Alignment.bottomRight,
+                              child: FadeTransition(
+                                opacity: animation,
+                                child: child,
+                              ),
                             ),
+                        child: _assistantExpanded
+                            ? _buildAssistantPanel(
+                                key: const ValueKey('panel'),
+                                width: isNarrow ? null : 380,
+                                maxHeight: panelMaxHeight,
+                              )
+                            : _buildAssistantBubble(
+                                key: const ValueKey('bubble'),
+                              ),
+                      ),
                     ),
-                  ),
                 ],
               );
             },
           );
         },
       ),
+    );
+  }
+
+  Future<void> _openCartDialog() async {
+    if (!mounted) {
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            Future<void> adjustQuantity(int menuId, int nextQuantity) async {
+              setDialogState(() {});
+              await _updateCartQuantity(menuId, nextQuantity);
+              if (!mounted) {
+                return;
+              }
+              setDialogState(() {});
+            }
+
+            return AlertDialog(
+              title: const Text('Your Cart'),
+              content: SizedBox(
+                width: 480,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          _cartOrderId == null
+                              ? 'Draft order'
+                              : 'Order #$_cartOrderId · $_cartOrderStatus',
+                          style: const TextStyle(color: SpeedColors.inkSoft),
+                        ),
+                        const Spacer(),
+                        Text(
+                          '$_cartItemCount item(s)',
+                          style: const TextStyle(
+                            color: SpeedColors.navy,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    _buildOrderDetailsList(
+                      maxHeight: 280,
+                      editable: true,
+                      onAdjustQuantity: adjustQuantity,
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        const Text(
+                          'Total',
+                          style: TextStyle(
+                            color: SpeedColors.inkSoft,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const Spacer(),
+                        Text(
+                          'RM ${_cartTotal.toStringAsFixed(2)}',
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                            color: SpeedColors.navy,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Close'),
+                ),
+                FilledButton.icon(
+                  onPressed: _cartBusy || _cartLines.isEmpty || !_canEditCart
+                      ? null
+                      : () async {
+                          Navigator.of(context).pop();
+                          await _confirmManualOrderAndShowDialog();
+                        },
+                  icon: const Icon(Icons.check_circle_outline),
+                  label: const Text('Confirm Order'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 

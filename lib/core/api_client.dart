@@ -8,7 +8,7 @@ import 'package:mime/mime.dart';
 import 'auth_token_store.dart';
 
 class ApiClient {
-  ApiClient(this._tokenStore)
+  ApiClient(this._tokenStore, {this.onUnauthorized})
     : _dio = Dio(
         BaseOptions(
           baseUrl: const String.fromEnvironment(
@@ -29,12 +29,22 @@ class ApiClient {
           }
           handler.next(options);
         },
+        onError: (error, handler) async {
+          if (error.response?.statusCode == 401) {
+            await _tokenStore.clear();
+            onUnauthorized?.call();
+          }
+          handler.next(error);
+        },
       ),
     );
   }
 
   final Dio _dio;
   final AuthTokenStore _tokenStore;
+
+  /// Called when the server returns 401 (token expired / invalid).
+  final void Function()? onUnauthorized;
 
   String get baseUrl => _dio.options.baseUrl;
 
@@ -65,6 +75,56 @@ class ApiClient {
 
   Future<Map<String, dynamic>> ordersDisplay() async {
     final response = await _dio.get('/orders/display');
+    return _asMap(response.data);
+  }
+
+  Future<Map<String, dynamic>> orderCart({required String plateNumber}) async {
+    final response = await _dio.get(
+      '/orders/cart',
+      queryParameters: <String, dynamic>{'plate_number': plateNumber},
+    );
+    return _asMap(response.data);
+  }
+
+  Future<Map<String, dynamic>> addCartItem({
+    required String plateNumber,
+    required int menuId,
+    int quantity = 1,
+  }) async {
+    final response = await _dio.post(
+      '/orders/cart/items',
+      data: <String, dynamic>{
+        'plate_number': plateNumber,
+        'menu_id': menuId,
+        'quantity': quantity,
+      },
+    );
+    return _asMap(response.data);
+  }
+
+  Future<Map<String, dynamic>> updateCartItemQuantity({
+    required String plateNumber,
+    required int menuId,
+    required int quantity,
+  }) async {
+    final response = await _dio.patch(
+      '/orders/cart/items',
+      data: <String, dynamic>{
+        'plate_number': plateNumber,
+        'menu_id': menuId,
+        'quantity': quantity,
+      },
+    );
+    return _asMap(response.data);
+  }
+
+  Future<Map<String, dynamic>> confirmCartOrder({
+    required String plateNumber,
+  }) async {
+    final response = await _dio.post(
+      '/orders/cart/confirm',
+      data: <String, dynamic>{'plate_number': plateNumber},
+    );
     return _asMap(response.data);
   }
 

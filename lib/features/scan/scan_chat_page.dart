@@ -349,9 +349,16 @@ class _ScanChatPageState extends State<ScanChatPage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    const normalSidePanelWidth = 360.0;
+    final viewport = MediaQuery.sizeOf(context);
+    final sideGutter = ((viewport.width - 980) / 2).clamp(0.0, double.infinity);
+    final canDockSideBubble = sideGutter >= 96;
+    final sidePanelWidth = normalSidePanelWidth;
+    final sidePanelMaxHeight = (viewport.height - 120).clamp(320.0, 560.0);
+    final useSideFloating = canDockSideBubble;
 
     return SpeedShell(
-      title: 'Scan and Assistant',
+      title: 'Entry',
       subtitle: 'Speed Burger · Drive-Thru System',
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -364,6 +371,24 @@ class _ScanChatPageState extends State<ScanChatPage> {
           ),
         ],
       ),
+      floating: useSideFloating
+          ? AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              transitionBuilder: (child, animation) => ScaleTransition(
+                scale: animation,
+                alignment: Alignment.bottomRight,
+                child: FadeTransition(opacity: animation, child: child),
+              ),
+              child: _assistantExpanded
+                  ? _buildAssistantPanel(
+                      theme,
+                      key: const ValueKey('panel-side'),
+                      width: sidePanelWidth,
+                      maxHeight: sidePanelMaxHeight,
+                    )
+                  : _buildAssistantBubble(key: const ValueKey('bubble-side')),
+            )
+          : null,
       child: LayoutBuilder(
         builder: (context, constraints) {
           final isNarrow = constraints.maxWidth < 640;
@@ -390,33 +415,36 @@ class _ScanChatPageState extends State<ScanChatPage> {
                     child: SingleChildScrollView(
                       // Bottom padding keeps the floating bubble from
                       // ever covering the last bit of scan-panel content.
-                      padding: const EdgeInsets.only(bottom: 88),
+                      padding: EdgeInsets.only(
+                        bottom: useSideFloating ? 12 : 88,
+                      ),
                       child: _buildScanPanel(theme),
                     ),
                   ),
                 ],
               ),
-              Positioned(
-                right: 16,
-                bottom: 8,
-                left: isNarrow && _assistantExpanded ? 16 : null,
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 220),
-                  transitionBuilder: (child, animation) => ScaleTransition(
-                    scale: animation,
-                    alignment: Alignment.bottomRight,
-                    child: FadeTransition(opacity: animation, child: child),
+              if (!useSideFloating)
+                Positioned(
+                  right: 16,
+                  bottom: 8,
+                  left: isNarrow && _assistantExpanded ? 16 : null,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 220),
+                    transitionBuilder: (child, animation) => ScaleTransition(
+                      scale: animation,
+                      alignment: Alignment.bottomRight,
+                      child: FadeTransition(opacity: animation, child: child),
+                    ),
+                    child: _assistantExpanded
+                        ? _buildAssistantPanel(
+                            theme,
+                            key: const ValueKey('panel'),
+                            width: isNarrow ? null : 380,
+                            maxHeight: panelMaxHeight,
+                          )
+                        : _buildAssistantBubble(key: const ValueKey('bubble')),
                   ),
-                  child: _assistantExpanded
-                      ? _buildAssistantPanel(
-                          theme,
-                          key: const ValueKey('panel'),
-                          width: isNarrow ? null : 380,
-                          maxHeight: panelMaxHeight,
-                        )
-                      : _buildAssistantBubble(key: const ValueKey('bubble')),
                 ),
-              ),
               Positioned(
                 top: 4,
                 left: 16,

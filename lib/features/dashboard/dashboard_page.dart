@@ -211,7 +211,7 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget _quickActionsGrid(BuildContext context) {
     final actions = <_QuickAction>[
       _QuickAction(
-        title: 'Scan and Chat',
+        title: 'Entry',
         description:
             'Capture a plate, confirm direction, and continue the drive-thru assistant flow.',
         icon: Icons.camera_alt_outlined,

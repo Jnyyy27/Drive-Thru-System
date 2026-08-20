@@ -6,13 +6,15 @@ import 'auth_token_store.dart';
 import 'cognito_auth_service.dart';
 
 class AuthSessionController extends ChangeNotifier {
-  AuthSessionController()
-    : _tokenStore = AuthTokenStore(),
-      _apiClient = ApiClient(AuthTokenStore()),
-      _authService = CognitoAuthService(AuthTokenStore());
+  AuthSessionController() : _tokenStore = AuthTokenStore(), _authService = CognitoAuthService(AuthTokenStore()) {
+    _apiClient = ApiClient(
+      _tokenStore,
+      onUnauthorized: _handleUnauthorized,
+    );
+  }
 
   final AuthTokenStore _tokenStore;
-  final ApiClient _apiClient;
+  late final ApiClient _apiClient;
   final CognitoAuthService _authService;
 
   bool _initialized = false;
@@ -71,6 +73,13 @@ class AuthSessionController extends ChangeNotifier {
       _statusText = 'Redirecting to logout...';
       notifyListeners();
     });
+  }
+
+  void _handleUnauthorized() {
+    _currentUser = null;
+    _tokenPreview = null;
+    _statusText = 'Session expired. Please sign in again.';
+    notifyListeners();
   }
 
   Future<void> clearLocalToken() async {
